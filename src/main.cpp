@@ -107,12 +107,10 @@ static const int8_t HG_HW[24] = {
 //           1.0 = done  (top empty, bottom full)
 void drawHourglass(float progress) {
     progress = constrain(progress, 0.0f, 1.0f);
-    // Eased progress: wide rows drain slowly, narrow rows near neck drain fast.
-    // sqrtf curve: slow at start (wide rows stay lit longer), fast toward end.
-    int topFilled = (int)roundf(12.0f * sqrtf(1.0f - progress));
-    int botFilled = (int)roundf(12.0f * sqrtf(progress));
-    topFilled = constrain(topFilled, 0, 12);
-    botFilled = constrain(botFilled, 0, 12);
+    // Eased drain: wide rows (top) drain slowly via sqrt curve; narrow rows fast.
+    // Bottom is locked to top: one top row off → one bottom row on (1:1 sync).
+    int topFilled = constrain((int)roundf(12.0f * sqrtf(1.0f - progress)), 0, 12);
+    int botFilled = 12 - topFilled;
 
     // TOP HALF (i=0..11, rows 8..19): sand level DROPS from the top.
     // Wide rows at the top empty first; narrow rows near the neck remain last.
