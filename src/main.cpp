@@ -109,16 +109,54 @@ void drawHourglass(float progress) {
     int topFilled = lroundf((1.0f - progress) * 12.0f);
     int botFilled = lroundf(progress           * 12.0f);
 
-    for (int i = 0; i < 24; i++) {
+    // TOP HALF (i=0..11, rows 8..19): sand level DROPS from the top.
+    // Wide rows at the top empty first; narrow rows near the neck remain last.
+    // lit = rows i=(12-topFilled)..11  →  as topFilled shrinks, top rows go empty.
+    for (int i = 0; i < 12; i++) {
         int row = 8 + i;
         int hw  = HG_HW[i];
-        bool lit = (i < 12) ? (i < topFilled && hw > 0)
-                             : ((i - 12) < botFilled && hw > 0);
+        bool lit = (i >= (12 - topFilled)) && (hw > 0);
         if (lit) {
             for (int c = 0; c < 16; c++)
                 setPhysPx(row, c, c >= (8 - hw) && c <= (7 + hw));
         } else {
             setPhysRow(row, false);
+        }
+    }
+
+    // BOTTOM HALF (i=12..23, rows 20..31): sand PILES UP from the floor.
+    // Fill from i=23 (row 31) upward — like real sand accumulating at the bottom.
+    for (int i = 12; i < 24; i++) {
+        int row = 8 + i;
+        int hw  = HG_HW[i];
+        bool lit = (i >= (24 - botFilled)) && (hw > 0);
+        if (lit) {
+            for (int c = 0; c < 16; c++)
+                setPhysPx(row, c, c >= (8 - hw) && c <= (7 + hw));
+        } else {
+            setPhysRow(row, false);
+        }
+    }
+
+    // FALLING GRAIN: animated pixel drops from neck to the top of the sand pile.
+    // Only shown while timer is actively running (progress > 0 and top has sand).
+    if (progress > 0.0f && progress < 1.0f && topFilled > 0) {
+        int neckRow    = 19;                 // bottom of top half (hw=0 rows)
+        int pileFirst  = 24 - botFilled;     // i-index of first pile row from bottom
+        int pileTopRow = 8 + pileFirst;      // physical row where pile starts
+        int grainEnd   = pileTopRow - 1;     // last empty row above the pile
+        grainEnd = constrain(grainEnd, neckRow, 31);
+
+        int fallDist = grainEnd - neckRow + 1;
+        if (fallDist > 1) {
+            // Period scales with distance so grain appears faster when pile is full
+            unsigned long period = (unsigned long)fallDist * 45 + 80;
+            float frac    = (float)(millis() % period) / (float)period;
+            int grainRow  = neckRow + (int)(frac * fallDist);
+            grainRow      = constrain(grainRow, neckRow, grainEnd);
+            // Draw 2-px wide grain through center columns (matches neck opening)
+            setPhysPx(grainRow, 7, true);
+            setPhysPx(grainRow, 8, true);
         }
     }
 }
@@ -156,10 +194,11 @@ void tickFinishAnim() {
                 finWipeRow = 0; finWipePh = 0;
                 if (++finWipeLps >= 3) {
                     finWipeDone = true;
+                    mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
                     mx.clear();
+                    drawNumber(0);
                     mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
                     mx.update();
-                    drawNumber(0);
                     mx.control(MD_MAX72XX::INTENSITY, 8);
                     return;
                 }
@@ -235,30 +274,30 @@ void loop() {
     // ── SETTING ──────────────────────────────────────────────────────────────
     if (currentState == SETTING) {
 
-        long          curCount = encoder.getCount();
-        unsigned long nowMs    = millis();
-        long          delta    = curCount - encPrevCount;
-        unsigned long dt       = nowMs - encPrevMs;
+        // Adaptive speed via fixed 80 ms sampling window.
+        // Accumulate counts over the window; x1 for a single detent, x5 for 2+.
+        // encoder.setCount() fires once per window — never mid-detent.
+        unsigned long nowMs = millis();
+        if (nowMs - encPrevMs >= 50) {
+            long curCount = encoder.getCount();
+            long delta    = curCount - encPrevCount;
+            int  detents  = abs((int)(delta / 2));   // full detents this window
 
-        if (delta != 0 && dt >= 30) {
-            // Adaptive speed: fast spin → larger steps
-            float vel  = (float)abs(delta) / (float)dt * 1000.0f; // ticks/sec
-            int   mult = 1;
-            if      (vel > 40) mult = 10;
-            else if (vel > 20) mult =  5;
-            else if (vel > 8)  mult =  2;
+            if (delta != 0) {
+                int mult = (detents >= 3) ? 5 : 1;   // fast spin → x5, slow → x1
 
-            int step    = ((int)(delta / 2)) * mult;
-            int newMins = constrain(targetMinutes + step, 1, 99);
+                int step    = (int)(delta / 2) * mult;
+                int newMins = constrain(targetMinutes + step, 1, 99);
 
-            if (newMins != targetMinutes) {
-                targetMinutes = newMins;
+                if (newMins != targetMinutes) {
+                    targetMinutes = newMins;
+                    drawUI(targetMinutes, 0.0f);
+                    Serial.printf("Set: %d min [x%d]\n", targetMinutes, mult);
+                }
                 encoder.setCount(targetMinutes * 2);
-                drawUI(targetMinutes, 0.0f);
-                Serial.printf("Set: %d min\n", targetMinutes);
+                encPrevCount = targetMinutes * 2;
             }
-            encPrevCount = encoder.getCount();
-            encPrevMs    = nowMs;
+            encPrevMs = nowMs;
         }
 
         if (btn == 1) {  // short press → start
