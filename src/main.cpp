@@ -12,7 +12,8 @@
 #define ROT_SW     3
 
 // ── Display ───────────────────────────────────────────────────────────────────
-#define MAX_DEVICES 8
+#define MAX_DEVICES  8
+#define BRIGHTNESS   8    // Global brightness 0–15. Change here to remap all states.
 MD_MAX72XX mx = MD_MAX72XX(MD_MAX72XX::GENERIC_HW, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 ESP32Encoder encoder;
 
@@ -276,7 +277,7 @@ void setup() {
     Serial.begin(115200);
 
     mx.begin();
-    mx.control(MD_MAX72XX::INTENSITY, 8);
+    mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
     mx.clear();
 
     encoder.attachHalfQuad(ROT_CLK, ROT_DT);
@@ -369,14 +370,16 @@ void loop() {
         if (millis() - pulseMs > 30) {
             pulseMs   = millis();
             pulseVal += pulseDir;
-            if (pulseVal >= 12 || pulseVal <= 3) pulseDir = -pulseDir;
+            int lo = max(1, BRIGHTNESS - 5);
+            int hi = min(15, BRIGHTNESS + 4);
+            if (pulseVal >= hi || pulseVal <= lo) pulseDir = -pulseDir;
             mx.control(MD_MAX72XX::INTENSITY, pulseVal);
         }
 
         if (btn == 1) {   // short press → resume
             pauseOffset  += millis() - pausedAt;
             currentState  = RUNNING;
-            mx.control(MD_MAX72XX::INTENSITY, 8);
+            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
             Serial.println("Resumed");
         }
         if (btn == 2) {   // long press → reset to SETTING
@@ -385,7 +388,7 @@ void loop() {
             encoder.setCount(targetMinutes * 2);
             encPrevCount = targetMinutes * 2;
             encPrevMs    = millis();
-            mx.control(MD_MAX72XX::INTENSITY, 8);
+            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Reset");
         }
@@ -411,7 +414,7 @@ void loop() {
             encoder.setCount(targetMinutes * 2);
             encPrevCount = targetMinutes * 2;
             encPrevMs    = millis();
-            mx.control(MD_MAX72XX::INTENSITY, 8);
+            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Reset to Setting");
         }
@@ -425,7 +428,7 @@ void loop() {
             encoder.setCount(targetMinutes * 2);
             encPrevCount = targetMinutes * 2;
             encPrevMs    = millis();
-            mx.control(MD_MAX72XX::INTENSITY, 8);
+            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Wake from standby");
         }
