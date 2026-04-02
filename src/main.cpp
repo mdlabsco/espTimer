@@ -13,12 +13,12 @@
 
 // ── Display ───────────────────────────────────────────────────────────────────
 #define MAX_DEVICES  8
-#define BRIGHTNESS   8    // Global brightness 0–15. Change here to remap all states.
+int globalBrightness = 8; // Global brightness 0-15.
 MD_MAX72XX mx = MD_MAX72XX(MD_MAX72XX::GENERIC_HW, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 ESP32Encoder encoder;
 
 // ── State Machine ─────────────────────────────────────────────────────────────
-enum State { SETTING, RUNNING, PAUSED, FINISHED, STANDBY };
+enum State { SETTING, SETTING_BRIGHTNESS, RUNNING, PAUSED, FINISHED, STANDBY };
 State currentState = SETTING;
 
 // ── Timer ─────────────────────────────────────────────────────────────────────
@@ -272,12 +272,40 @@ void drawUI(int number, float hgProgress) {
     mx.update();
 }
 
+// ══ Brightness UI ════════════════════════════════════════════════════════════
+void drawBrightnessBar(int level) {
+    mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
+    drawNumber(level);
+    
+    // Clear rows 8-31 for the bar drawing area
+    for (int r = 8; r < 32; r++) setPhysRow(r, false);
+    
+    int fillRows = (level * 24) / 15;
+    
+    for (int i = 0; i < 24; i++) {
+        int r = 31 - i; // Fill from bottom (row 31) to top (row 8)
+        int halfWidth = 3 + (i * 4) / 23; // width varies from 6 to 14 pixels
+        bool isFilled = (i < fillRows);
+        
+        for (int c = 0; c < 16; c++) {
+            if (c >= (8 - halfWidth) && c <= (7 + halfWidth)) {
+                bool isEdge = (c == (8 - halfWidth) || c == (7 + halfWidth));
+                bool shouldLight = isFilled || isEdge || (i == 0) || (i == 23);
+                setPhysPx(r, c, shouldLight);
+            }
+        }
+    }
+    
+    mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
+    mx.update();
+}
+
 // ══ Setup ════════════════════════════════════════════════════════════════════
 void setup() {
     Serial.begin(115200);
 
     mx.begin();
-    mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
+    mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
     mx.clear();
 
     encoder.attachHalfQuad(ROT_CLK, ROT_DT);
@@ -333,6 +361,46 @@ void loop() {
             currentState = RUNNING;
             Serial.printf("Started! %d min\n", targetMinutes);
         }
+        if (btn == 2) { // long press -> goto brightness setting
+            currentState = SETTING_BRIGHTNESS;
+            encoder.setCount(globalBrightness * 2);
+            encPrevCount = globalBrightness * 2;
+            encPrevMs    = millis();
+            drawBrightnessBar(globalBrightness);
+            Serial.println("Setting Brightness");
+        }
+    }
+
+    // ── SETTING BRIGHTNESS ───────────────────────────────────────────────────
+    else if (currentState == SETTING_BRIGHTNESS) {
+        unsigned long nowMs = millis();
+        if (nowMs - encPrevMs >= 50) {
+            long curCount = encoder.getCount();
+            long delta    = curCount - encPrevCount;
+            int  detents  = (int)(delta / 2);
+
+            if (detents != 0) {
+                int newBr = constrain(globalBrightness + detents, 0, 15);
+                if (newBr != globalBrightness) {
+                    globalBrightness = newBr;
+                    drawBrightnessBar(globalBrightness);
+                    mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
+                    Serial.printf("Brightness: %d\n", globalBrightness);
+                }
+                encoder.setCount(globalBrightness * 2);
+                encPrevCount = globalBrightness * 2;
+            }
+            encPrevMs = nowMs;
+        }
+
+        if (btn == 1) {  // short press → return to timer
+            currentState = SETTING;
+            encoder.setCount(targetMinutes * 2);
+            encPrevCount = targetMinutes * 2;
+            encPrevMs    = millis();
+            drawUI(targetMinutes, 0.0f);
+            Serial.println("Returned to Set Timer");
+        }
     }
 
     // ── RUNNING ───────────────────────────────────────────────────────────────
@@ -370,8 +438,8 @@ void loop() {
         if (millis() - pulseMs > 30) {
             pulseMs   = millis();
             pulseVal += pulseDir;
-            int lo = max(1, BRIGHTNESS - 5);
-            int hi = min(15, BRIGHTNESS + 4);
+            int lo = max(1, globalBrightness - 5);
+            int hi = min(15, globalBrightness + 4);
             if (pulseVal >= hi || pulseVal <= lo) pulseDir = -pulseDir;
             mx.control(MD_MAX72XX::INTENSITY, pulseVal);
         }
@@ -379,7 +447,7 @@ void loop() {
         if (btn == 1) {   // short press → resume
             pauseOffset  += millis() - pausedAt;
             currentState  = RUNNING;
-            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
+            mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
             Serial.println("Resumed");
         }
         if (btn == 2) {   // long press → reset to SETTING
@@ -388,7 +456,7 @@ void loop() {
             encoder.setCount(targetMinutes * 2);
             encPrevCount = targetMinutes * 2;
             encPrevMs    = millis();
-            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
+            mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Reset");
         }
@@ -414,7 +482,7 @@ void loop() {
             encoder.setCount(targetMinutes * 2);
             encPrevCount = targetMinutes * 2;
             encPrevMs    = millis();
-            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
+            mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Reset to Setting");
         }
@@ -428,7 +496,7 @@ void loop() {
             encoder.setCount(targetMinutes * 2);
             encPrevCount = targetMinutes * 2;
             encPrevMs    = millis();
-            mx.control(MD_MAX72XX::INTENSITY, BRIGHTNESS);
+            mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Wake from standby");
         }
