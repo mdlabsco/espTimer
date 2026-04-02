@@ -105,22 +105,38 @@ static const int8_t HG_HW[24] = {
     0, 1, 2, 3,  4, 5, 6, 7, 8, 8, 8, 8   // bot: 8-step taper + 4 flat
 };
 
+static bool getHGEdge(int i, int c) {
+    int hw = HG_HW[i];
+    // Caps at the very top and bottom
+    if (i == 0 || i == 23) {
+        if (hw > 0 && c >= (8-hw) && c <= (7+hw)) return true;
+    }
+    // Mid-section outline
+    if (hw > 0) return (c == (8-hw) || c == (7+hw));
+    // Neck outline
+    return (c == 7 || c == 8);
+}
+
 // Draining row: outer edges remain, center goes dark first (sand falls through middle).
-static void drawHGRowDrain(int row, int hw, float litFrac) {
+static void drawHGRowDrain(int i, int row, int hw, float litFrac) {
     int litHW = (int)roundf(hw * constrain(litFrac, 0.0f, 1.0f));
     for (int c = 0; c < 16; c++) {
-        bool lit = hw > 0 && litHW > 0 &&
+        bool isEdge = getHGEdge(i, c);
+        bool isSand = hw > 0 && litHW > 0 &&
                    ((c >= (8-hw) && c < (8-hw+litHW)) ||   // left outer
                     (c > (7+hw-litHW) && c <= (7+hw)));     // right outer
-        setPhysPx(row, c, lit);
+        setPhysPx(row, c, isEdge || isSand);
     }
 }
 
 // Filling row: center lights up first, spreads outward (sand piles from center).
-static void drawHGRowFill(int row, int hw, float fillFrac) {
+static void drawHGRowFill(int i, int row, int hw, float fillFrac) {
     int litHW = (int)roundf(hw * constrain(fillFrac, 0.0f, 1.0f));
-    for (int c = 0; c < 16; c++)
-        setPhysPx(row, c, hw > 0 && litHW > 0 && c >= (8-litHW) && c <= (7+litHW));
+    for (int c = 0; c < 16; c++) {
+        bool isEdge = getHGEdge(i, c);
+        bool isSand = hw > 0 && litHW > 0 && c >= (8-litHW) && c <= (7+litHW);
+        setPhysPx(row, c, isEdge || isSand);
+    }
 }
 
 // progress 0.0 = start (top full), 1.0 = done (bottom full).
@@ -146,11 +162,12 @@ void drawHourglass(float progress) {
         int row = 8 + i, hw = HG_HW[i];
         if      (i > topDrainI)               // fully lit
             for (int c = 0; c < 16; c++)
-                setPhysPx(row, c, hw > 0 && c >= (8-hw) && c <= (7+hw));
+                setPhysPx(row, c, getHGEdge(i, c) || (hw > 0 && c >= (8-hw) && c <= (7+hw)));
         else if (i == topDrainI && hw > 0)    // draining frontier
-            drawHGRowDrain(row, hw, drainFrac);
+            drawHGRowDrain(i, row, hw, drainFrac);
         else                                  // empty
-            setPhysRow(row, false);
+            for (int c = 0; c < 16; c++)
+                setPhysPx(row, c, getHGEdge(i, c));
     }
 
     // BOTTOM HALF (i=12..23, rows 20..31) — fills from bottom (i=23) upward.
@@ -161,11 +178,12 @@ void drawHourglass(float progress) {
         int row = 8 + i, hw = HG_HW[i];
         if      (i > botFillI)                // fully filled
             for (int c = 0; c < 16; c++)
-                setPhysPx(row, c, hw > 0 && c >= (8-hw) && c <= (7+hw));
+                setPhysPx(row, c, getHGEdge(i, c) || (hw > 0 && c >= (8-hw) && c <= (7+hw)));
         else if (i == botFillI && hw > 0)     // filling frontier
-            drawHGRowFill(row, hw, botFillFrac);
+            drawHGRowFill(i, row, hw, botFillFrac);
         else                                  // empty
-            setPhysRow(row, false);
+            for (int c = 0; c < 16; c++)
+                setPhysPx(row, c, getHGEdge(i, c));
     }
 
     // FALLING GRAIN: pixel drops from neck (row 19) to just above the pile.
