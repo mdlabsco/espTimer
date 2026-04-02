@@ -98,71 +98,91 @@ void drawNumber(int n) {
 // ══ Hourglass (rows 8–31, 24 rows) ══════════════════════════════════════════
 // HG_HW[i] = half-pixel-width at row (8+i), centred at col 8.
 // Top half (i=0–11): narrows toward neck. Bottom (i=12–23): widens from neck.
+// Shape: 4 flat wide rows at top/bottom, then linear taper to neck.
 static const int8_t HG_HW[24] = {
-    8, 7, 6, 5, 4, 4, 3, 2, 2, 1, 1, 0,  // top
-    0, 1, 1, 2, 2, 3, 4, 4, 5, 6, 7, 8   // bottom
+    8, 8, 8, 8,  7, 6, 5, 4, 3, 2, 1, 0,  // top: 4 flat + 8-step taper
+    0, 1, 2, 3,  4, 5, 6, 7, 8, 8, 8, 8   // bot: 8-step taper + 4 flat
 };
 
-// progress: 0.0 = start (top full, bottom empty)
-//           1.0 = done  (top empty, bottom full)
+// Draining row: outer edges remain, center goes dark first (sand falls through middle).
+static void drawHGRowDrain(int row, int hw, float litFrac) {
+    int litHW = (int)roundf(hw * constrain(litFrac, 0.0f, 1.0f));
+    for (int c = 0; c < 16; c++) {
+        bool lit = hw > 0 && litHW > 0 &&
+                   ((c >= (8-hw) && c < (8-hw+litHW)) ||   // left outer
+                    (c > (7+hw-litHW) && c <= (7+hw)));     // right outer
+        setPhysPx(row, c, lit);
+    }
+}
+
+// Filling row: center lights up first, spreads outward (sand piles from center).
+static void drawHGRowFill(int row, int hw, float fillFrac) {
+    int litHW = (int)roundf(hw * constrain(fillFrac, 0.0f, 1.0f));
+    for (int c = 0; c < 16; c++)
+        setPhysPx(row, c, hw > 0 && litHW > 0 && c >= (8-litHW) && c <= (7+litHW));
+}
+
+// progress 0.0 = start (top full), 1.0 = done (bottom full).
 void drawHourglass(float progress) {
     progress = constrain(progress, 0.0f, 1.0f);
-    // Eased drain: wide rows (top) drain slowly via sqrt curve; narrow rows fast.
-    // Bottom is locked to top: one top row off → one bottom row on (1:1 sync).
-    int topFilled = constrain((int)roundf(12.0f * sqrtf(1.0f - progress)), 0, 12);
-    int botFilled = 12 - topFilled;
 
-    // TOP HALF (i=0..11, rows 8..19): sand level DROPS from the top.
-    // Wide rows at the top empty first; narrow rows near the neck remain last.
-    // lit = rows i=(12-topFilled)..11  →  as topFilled shrinks, top rows go empty.
+    // Sqrt easing: wide rows drain slowly, narrow rows near neck drain fast.
+    // rawFilled is continuous 12→0; split into integer rows + fractional frontier.
+    float rawFilled    = 12.0f * sqrtf(1.0f - progress);
+    int   topFilled    = constrain((int)floorf(rawFilled), 0, 12);
+    float drainFrac    = rawFilled - topFilled;       // 1.0=full, 0.0=drained
+
+    // Bottom locked: top + bot = 12 (conservation of sand).
+    float rawBot       = 12.0f - rawFilled;
+    int   botFilledInt = constrain((int)floorf(rawBot), 0, 12);
+    float botFillFrac  = rawBot - botFilledInt;       // 0.0=empty, 1.0=full
+
+    // TOP HALF (i=0..11, rows 8..19)
+    // Fully lit rows: i > (11-topFilled)  (closer to neck)
+    // Frontier (draining): i == (11-topFilled)
+    int topDrainI = 11 - topFilled; // -1 when full (no drain row)
     for (int i = 0; i < 12; i++) {
-        int row = 8 + i;
-        int hw  = HG_HW[i];
-        bool lit = (i >= (12 - topFilled)) && (hw > 0);
-        if (lit) {
+        int row = 8 + i, hw = HG_HW[i];
+        if      (i > topDrainI)               // fully lit
             for (int c = 0; c < 16; c++)
-                setPhysPx(row, c, c >= (8 - hw) && c <= (7 + hw));
-        } else {
+                setPhysPx(row, c, hw > 0 && c >= (8-hw) && c <= (7+hw));
+        else if (i == topDrainI && hw > 0)    // draining frontier
+            drawHGRowDrain(row, hw, drainFrac);
+        else                                  // empty
             setPhysRow(row, false);
-        }
     }
 
-    // BOTTOM HALF (i=12..23, rows 20..31): sand PILES UP from the floor.
-    // Fill from i=23 (row 31) upward — like real sand accumulating at the bottom.
+    // BOTTOM HALF (i=12..23, rows 20..31) — fills from bottom (i=23) upward.
+    // Fully filled: i > (23-botFilledInt)
+    // Frontier (filling): i == (23-botFilledInt)
+    int botFillI = 23 - botFilledInt;  // 23 when nothing filled yet
     for (int i = 12; i < 24; i++) {
-        int row = 8 + i;
-        int hw  = HG_HW[i];
-        bool lit = (i >= (24 - botFilled)) && (hw > 0);
-        if (lit) {
+        int row = 8 + i, hw = HG_HW[i];
+        if      (i > botFillI)                // fully filled
             for (int c = 0; c < 16; c++)
-                setPhysPx(row, c, c >= (8 - hw) && c <= (7 + hw));
-        } else {
+                setPhysPx(row, c, hw > 0 && c >= (8-hw) && c <= (7+hw));
+        else if (i == botFillI && hw > 0)     // filling frontier
+            drawHGRowFill(row, hw, botFillFrac);
+        else                                  // empty
             setPhysRow(row, false);
-        }
     }
 
-    // FALLING GRAIN: animated pixel drops from neck to the top of the sand pile.
-    // Only shown while timer is actively running (progress > 0 and top has sand).
+    // FALLING GRAIN: pixel drops from neck (row 19) to just above the pile.
     if (progress > 0.0f && progress < 1.0f && topFilled > 0) {
-        int neckRow    = 19;                 // bottom of top half (hw=0 rows)
-        int pileFirst  = 24 - botFilled;     // i-index of first pile row from bottom
-        int pileTopRow = 8 + pileFirst;      // physical row where pile starts
-        int grainEnd   = pileTopRow - 1;     // last empty row above the pile
-        grainEnd = constrain(grainEnd, neckRow, 31);
-
+        int neckRow  = 19;
+        int grainEnd = constrain((31 - botFilledInt) - 1, neckRow, 31);
         int fallDist = grainEnd - neckRow + 1;
         if (fallDist > 1) {
-            // Period scales with distance so grain appears faster when pile is full
             unsigned long period = (unsigned long)fallDist * 45 + 80;
-            float frac    = (float)(millis() % period) / (float)period;
-            int grainRow  = neckRow + (int)(frac * fallDist);
-            grainRow      = constrain(grainRow, neckRow, grainEnd);
-            // Draw 2-px wide grain through center columns (matches neck opening)
+            int grainRow = neckRow + (int)((float)(millis() % period) / period * fallDist);
+            grainRow = constrain(grainRow, neckRow, grainEnd);
             setPhysPx(grainRow, 7, true);
             setPhysPx(grainRow, 8, true);
         }
     }
 }
+
+
 
 // ══ Finish Animation ════════════════════════════════════════════════════════
 // Phase 1: Cascade wipe (fill all rows top→bottom, clear top→bottom) × 3
