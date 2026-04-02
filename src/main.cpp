@@ -17,7 +17,7 @@ MD_MAX72XX mx = MD_MAX72XX(MD_MAX72XX::GENERIC_HW, DATA_PIN, CLK_PIN, CS_PIN, MA
 ESP32Encoder encoder;
 
 // ── State Machine ─────────────────────────────────────────────────────────────
-enum State { SETTING, RUNNING, PAUSED, FINISHED };
+enum State { SETTING, RUNNING, PAUSED, FINISHED, STANDBY };
 State currentState = SETTING;
 
 // ── Timer ─────────────────────────────────────────────────────────────────────
@@ -47,6 +47,7 @@ unsigned long finLastMs   = 0;
 int           finFlashVal = 8;
 int           finFlashDir = 1;
 unsigned long finFlashMs  = 0;
+unsigned long finishedAtMs = 0;  // timestamp when FINISHED state was entered
 
 // ══ Low-level pixel helpers ══════════════════════════════════════════════════
 void setPhysRow(int r, bool on) {
@@ -106,8 +107,12 @@ static const int8_t HG_HW[24] = {
 //           1.0 = done  (top empty, bottom full)
 void drawHourglass(float progress) {
     progress = constrain(progress, 0.0f, 1.0f);
-    int topFilled = lroundf((1.0f - progress) * 12.0f);
-    int botFilled = lroundf(progress           * 12.0f);
+    // Eased progress: wide rows drain slowly, narrow rows near neck drain fast.
+    // sqrtf curve: slow at start (wide rows stay lit longer), fast toward end.
+    int topFilled = (int)roundf(12.0f * sqrtf(1.0f - progress));
+    int botFilled = (int)roundf(12.0f * sqrtf(progress));
+    topFilled = constrain(topFilled, 0, 12);
+    botFilled = constrain(botFilled, 0, 12);
 
     // TOP HALF (i=0..11, rows 8..19): sand level DROPS from the top.
     // Wide rows at the top empty first; narrow rows near the neck remain last.
@@ -281,12 +286,12 @@ void loop() {
         if (nowMs - encPrevMs >= 50) {
             long curCount = encoder.getCount();
             long delta    = curCount - encPrevCount;
-            int  detents  = abs((int)(delta / 2));   // full detents this window
+            int  detents  = (int)(delta / 2);   // signed full detents (integer division)
 
-            if (delta != 0) {
-                int mult = (detents >= 3) ? 5 : 1;   // fast spin → x5, slow → x1
-
-                int step    = (int)(delta / 2) * mult;
+            if (detents != 0) {
+                // Full detent(s) detected — compute step and apply
+                int mult    = (abs(detents) >= 3) ? 5 : 1;
+                int step    = detents * mult;
                 int newMins = constrain(targetMinutes + step, 1, 99);
 
                 if (newMins != targetMinutes) {
@@ -294,9 +299,11 @@ void loop() {
                     drawUI(targetMinutes, 0.0f);
                     Serial.printf("Set: %d min [x%d]\n", targetMinutes, mult);
                 }
+                // Sync encoder & baseline only on full detents (never mid-detent)
                 encoder.setCount(targetMinutes * 2);
                 encPrevCount = targetMinutes * 2;
             }
+            // If detents=0 (half-step only): skip setCount, let delta accumulate
             encPrevMs = nowMs;
         }
 
@@ -316,6 +323,7 @@ void loop() {
 
         if (remaining <= 0) {
             currentState = FINISHED;
+            finishedAtMs = millis();
             resetFinishAnim();
             Serial.println("Time's up!");
         } else {
@@ -369,6 +377,17 @@ void loop() {
     else if (currentState == FINISHED) {
         tickFinishAnim();
 
+        // Auto-standby after 10 s: clear display, minimum brightness
+        if (millis() - finishedAtMs >= 10000UL) {
+            currentState = STANDBY;
+            mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
+            mx.clear();
+            mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
+            mx.update();
+            mx.control(MD_MAX72XX::INTENSITY, 0);
+            Serial.println("Standby");
+        }
+
         if (btn == 1) {   // short press → back to SETTING
             currentState = SETTING;
             encoder.setCount(targetMinutes * 2);
@@ -377,6 +396,20 @@ void loop() {
             mx.control(MD_MAX72XX::INTENSITY, 8);
             drawUI(targetMinutes, 0.0f);
             Serial.println("Reset to Setting");
+        }
+    }
+
+    // ── STANDBY ──────────────────────────────────────────────────────────────
+    else if (currentState == STANDBY) {
+        // Screen is off — any button press wakes back to SETTING
+        if (btn == 1) {
+            currentState = SETTING;
+            encoder.setCount(targetMinutes * 2);
+            encPrevCount = targetMinutes * 2;
+            encPrevMs    = millis();
+            mx.control(MD_MAX72XX::INTENSITY, 8);
+            drawUI(targetMinutes, 0.0f);
+            Serial.println("Wake from standby");
         }
     }
 }
