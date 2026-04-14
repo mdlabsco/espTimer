@@ -50,6 +50,9 @@ int           finFlashDir = 1;
 unsigned long finFlashMs  = 0;
 unsigned long finishedAtMs = 0;  // timestamp when FINISHED state was entered
 
+int pausePulseVal = 8;
+int pausePulseDir = 1;
+
 // ══ Low-level pixel helpers ══════════════════════════════════════════════════
 void setPhysRow(int r, bool on) {
     int blk = r / 8, rem = r % 8;
@@ -213,10 +216,10 @@ void resetFinishAnim() {
     finWipeLps  = 0;
     finWipeDone = false;
     finLastMs   = 0;
-    finFlashVal = 8;
-    finFlashDir = 1;
+    finFlashVal = globalBrightness;
+    finFlashDir = -1;
     finFlashMs  = 0;
-    mx.control(MD_MAX72XX::INTENSITY, 15);
+    mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
 }
 
 void tickFinishAnim() {
@@ -241,7 +244,7 @@ void tickFinishAnim() {
                     drawNumber(0);
                     mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
                     mx.update();
-                    mx.control(MD_MAX72XX::INTENSITY, 8);
+                    mx.control(MD_MAX72XX::INTENSITY, globalBrightness);
                     return;
                 }
             }
@@ -253,7 +256,11 @@ void tickFinishAnim() {
         if (now - finFlashMs < 25) return;
         finFlashMs   = now;
         finFlashVal += finFlashDir;
-        if (finFlashVal >= 14 || finFlashVal <= 2) finFlashDir = -finFlashDir;
+        int lo = max(1, globalBrightness - 5);
+        int hi = min(15, globalBrightness + 5);
+        if (finFlashVal >= hi) finFlashDir = -1;
+        else if (finFlashVal <= lo) finFlashDir = 1;
+        finFlashVal = constrain(finFlashVal, lo, hi);
         mx.control(MD_MAX72XX::INTENSITY, finFlashVal);
     }
 }
@@ -437,12 +444,19 @@ void loop() {
             int  displayNum = showMins ? (int)(remaining / 60000) + 1
                                        : (int)(remaining / 1000);
             float progress  = 1.0f - (float)remaining / (float)durationMs;
-            drawUI(displayNum, progress);
+            
+            static unsigned long lastDrawMs = 0;
+            if (millis() - lastDrawMs >= 30) { // Limit framerate to ~33Hz to prevent SPI overload & flickering
+                lastDrawMs = millis();
+                drawUI(displayNum, progress);
+            }
         }
 
         if (btn == 1) {   // short press → pause
-            pausedAt     = millis();
-            currentState = PAUSED;
+            pausedAt      = millis();
+            currentState  = PAUSED;
+            pausePulseVal = globalBrightness;
+            pausePulseDir = -1;
             Serial.println("Paused");
         }
     }
@@ -451,15 +465,15 @@ void loop() {
     else if (currentState == PAUSED) {
         // Pulse brightness to show frozen state
         static unsigned long pulseMs  = 0;
-        static int           pulseVal = 8;
-        static int           pulseDir = 1;
-        if (millis() - pulseMs > 30) {
+        if (millis() - pulseMs > 80) {
             pulseMs   = millis();
-            pulseVal += pulseDir;
+            pausePulseVal += pausePulseDir;
             int lo = max(1, globalBrightness - 5);
             int hi = min(15, globalBrightness + 4);
-            if (pulseVal >= hi || pulseVal <= lo) pulseDir = -pulseDir;
-            mx.control(MD_MAX72XX::INTENSITY, pulseVal);
+            if (pausePulseVal >= hi) pausePulseDir = -1;
+            else if (pausePulseVal <= lo) pausePulseDir = 1;
+            pausePulseVal = constrain(pausePulseVal, lo, hi);
+            mx.control(MD_MAX72XX::INTENSITY, pausePulseVal);
         }
 
         if (btn == 1) {   // short press → resume
